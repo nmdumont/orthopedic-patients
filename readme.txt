@@ -1,1 +1,1 @@
-We analyse biomechanical features of orthopedic patients
+In this project, we analyse biomechanical features of orthopedic patients.

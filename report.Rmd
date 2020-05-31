@@ -1,0 +1,405 @@
+---
+title: "Report on Biomechanical features of orthopedic patients"
+author: "Nathalie Dumont"
+date: "5/30/2020"
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 4
+
+---
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE, tidy.opts = list(width.cutoff=60), tidy=TRUE)
+```
+
+# Introduction
+
+This document is my report for the Capstone Project of The Data Science Professional Certificate I am pursuing.  
+We were supposed to choose a dataset and apply machine learning techniques. I chose a dataset summarizing biomechanical features of orthopedic patients, because my companion suffers from such disease (Hernia). I found adequate to do some research on the subject and establish if a diagnosis can be based on simple observation of verterbraes angles.  
+
+We begin by installing some packages :
+```{r packages, echo=FALSE,warning=FALSE,message=FALSE}
+if(!require(formatR)) install.packages("formatR", repos = "http://cran.rstudio.com")
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+#if(!require(RCurl)) install.packages("RCurl", repos = "http://cran.us.r-project.org")
+if(!require(rpart)) install.packages("rpart", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(readr)) install.packages("readr", repos = "http://cran.us.r-project.org")
+
+```
+```{r load-packages, warning=FALSE,message=FALSE}
+library(formatR)
+library(tidyverse)
+library(caret)
+library(data.table)
+library(readr)
+library(rpart)
+library(ggplot2)
+library(dplyr)
+library(knitr)
+```
+Then, we upload the data, originally found on [Kaggle](https://www.kaggle.com/uciml/biomechanical-features-of-orthopedic-patients) from my personal GitHub Repo
+```{r charging data, tidy=TRUE}
+address<-"https://raw.githubusercontent.com/nmdumont/orthopedic-patients/master/column_3C_weka.csv"
+data<-read.csv(url(address))
+```
+
+We can now take a look at the data :
+```{r exploring data}
+head(data)
+#We search for NA values
+sum(is.na(data))
+#Let's look at the structure:
+str(data)
+```
+
+We have 310 observations of 7 variables : **6 degrees** of various bones and the **indication of disease**.  
+
+The goal of this study is to predict the disease (spondylolisthesis, hernia, or no disease) based on the degrees given.
+We will first explore the data a bit more, look for correlation, and use several machine learning techniques to predict the disease.
+
+# Analysis
+
+The data provided by Kaggle is already clean. Reading the .csv file gave us the degrees and the indication of the disease as a factor.  
+We have not yet check the factor class :
+```{r examining class}
+levels(data$class)
+str(unique(data))
+```
+So our patients can't have both Spondylolisthesis *and* Hernia, and all observations are unique observations.  
+
+## Data exploration  
+
+For a first approach, we can visualize how each angle reflects a disease, or not. If a certain angle takes certain value only for hernia or spondylolisthesis, it could be a good predictor. Let's see how each angle has an incidence over the defect :
+
+```{r visualize data, out.width=500}
+data %>%
+  gather(angle, degree, -class) %>%
+  ggplot(aes(class,degree, col=class))+
+  geom_boxplot() +
+  facet_wrap(~angle)+
+  theme(axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank())
+```
+It seems clearly that spondylolisthesis angle is a good predictor for spondylosisthesis.  
+
+We do not have a clear dinstinction between hernia and normal for the various angles, except maybe for sacral slope. 
+Could sacral slope and pelvic tilt be a good combination of predictors ? I want to make a plot to see if there is any.
+A bit arbitrarily I select those two variables to predict the "disease".
+```{r a plot, out.width=400}
+data%>% filter (class!="Spondylolisthesis")%>%
+  ggplot(aes(sacral_slope,pelvic_tilt, col=class))+
+  geom_point()
+
+```
+  
+All seem quite intricate for those two variables. The larger values of sacral slope reflect normal patients, whatever the pelvic tilt. We can visualise other couples of variables :
+
+```{r different plots, echo=FALSE}
+data%>% filter (class!="Spondylolisthesis")%>%
+   ggplot(aes(sacral_slope,lumbar_lordosis_angle, col=class))+
+   geom_point()
+data%>% filter (class!="Spondylolisthesis")%>%
+   ggplot(aes(pelvic_radius,lumbar_lordosis_angle, col=class))+
+   geom_point()
+```
+The areas for Hernia and Normal are overlapping. That motivates our study to establish a model to predict Hernia for patients, based on the angles of their vertebraes.
+
+It is time to separate the dataset into test and training set.  
+
+## Test and training set
+```{r partitioning whole dataset}
+set.seed(1985)
+test_index <- createDataPartition(data$class, times = 1, p = 0.2, list = FALSE)    # create a 20% test set
+test_set <- data[test_index,]
+train_set <- data[-test_index,]
+```
+Now that we have two different sets, one of `r nrow(train_set)` rows for training, and one of `r nrow(test_set)` for testing, we can try to predict the disease.  
+
+## Modeling
+We are trying to guess the disease from random :
+```{r first model}
+guess <- sample(c("Hernia","Normal","Spondylolisthesis"), nrow(test_set), replace = TRUE)
+guess_acc<-mean(guess == test_set$class)
+```
+
+Guessing is not a good method, as expected. We will save our results in a tibble to see how it improves, depending on the method used.
+```{r tibble, echo=FALSE}
+accuracy_results<- tibble(Method="Guess", Accuracy=guess_acc)
+knitr::kable(accuracy_results)
+```
+
+We have a lot of predictors, 6, so I want to work classification and regression tree, as taught in the course.
+
+### Regression tree
+We have seen that the degree of spondylolisthesis is a good indicator of the disease. Using classification tree seems a good option to predict disease.
+
+```{r regression tree}
+fit<-rpart(class~.,data=train_set)
+plot(fit, margin=0.1)
+text(fit,cex=0.65)
+train_rpart <- train(class ~ ., 
+                     method = "rpart",
+                     tuneGrid = data.frame(cp = seq(0, 0.05, 0.002)),
+                     data = train_set)
+ggplot(train_rpart, hightlight=TRUE)
+rpart_preds <- predict(train_rpart, test_set)
+confusionMatrix(rpart_preds, test_set$class)
+```
+We have a really good sensitivity *and* specificity for predicting Spondylolisthesis. We can see how a random forest algorithm manages.
+```{r update results 1, echo=FALSE}
+accuracy_results<-bind_rows(accuracy_results,tibble(Method="Regression tree",Accuracy=confusionMatrix(rpart_preds,test_set$class)$overall["Accuracy"]))
+knitr::kable(accuracy_results)
+```
+
+### Random forest
+We try to compute a random forest algorithm over our training set.
+```{r random forest, warning=FALSE}
+train_rf <- train(class ~ .,
+                  data = train_set,
+                  method = "rf",
+                  ntree = 100,
+                  tuneGrid = data.frame(mtry = seq(1:7)))
+plot(train_rf)
+train_rf$bestTune
+varImp(train_rf$finalModel) 
+```
+Sacral slope and Lumbar Lordosis angle are the two most important variables (after Spondylolisthesis degree, obvioulsy) but not by far.
+Checking the results :
+```{r update results 2, echo=FALSE}
+rf_preds <- predict(train_rf, test_set)
+accuracy_results<-bind_rows(accuracy_results,tibble(Method="Random forest",Accuracy=confusionMatrix(rf_preds,test_set$class)$overall["Accuracy"]))
+knitr::kable(accuracy_results)
+```
+
+### K-Nearest-Neighbours
+We can try to train a KNN regression. 
+```{r knn}
+knn_fit<-knn3(class~.,data=train_set,k=5)
+confusionMatrix(predict(knn_fit,test_set,type="class"),test_set$class)$overall["Accuracy"]
+
+```
+We can do better by choosing a better number of neighbours :
+```{r KNN enhanced}
+train_knn<-train(class~.,
+                 data=train_set,
+                 method="knn",
+                 tuneGrid=data.frame(k=seq(3,21,2)))
+ggplot(train_knn,highlight = TRUE)
+train_knn$bestTune
+```
+```{r echo=FALSE}
+knn_results<-confusionMatrix(predict(train_knn,test_set,type="raw"),test_set$class)$overall["Accuracy"]
+
+accuracy_results<-bind_rows(accuracy_results,tibble(Method="KNN",Accuracy=knn_results))
+knitr::kable(accuracy_results)
+```
+
+### KNN using cross-validation
+We can optimize a bit using cross-validation :
+```{r cross validation knn}
+train_knn_cv <- train(class ~ .,
+                      method = "knn",
+                      data = train_set,
+                      tuneGrid = data.frame(k = seq(3, 51, 2)),
+                      trControl = trainControl(method = "cv", number = 10, p = 0.9))
+train_knn_cv$bestTune
+knn_cv_preds <- predict(train_knn_cv, test_set)
+
+
+```
+```{r cv results, echo=FALSE}
+cv_results<-confusionMatrix(predict(train_knn_cv,test_set,type="raw"),test_set$class)$overall["Accuracy"]
+
+accuracy_results<-bind_rows(accuracy_results,tibble(Method="KNN Cross-validation",Accuracy=cv_results))
+knitr::kable(accuracy_results)
+```
+
+# Results section
+
+Here are the results obtained from the several models :
+```{r results section, echo=FALSE}
+knitr::kable(accuracy_results)
+
+```
+
+Maybe trying to run a principal component analysis could have helped us.
+
+## PCA
+
+```{r principal component analysis, echo=FALSE}
+x<-train_set[,-7]%>%as.matrix()
+pca<-prcomp(x)
+data.frame(pca$x[,1:2], Disease=train_set$class) %>%
+  ggplot(aes(PC1,PC2,fill=Disease))+
+  geom_point(cex=3,pch=21)
+summary(pca)
+```
+
+When running a Principal Component Analysis, we see that the two principal components can be held responsible for more that 85% of the variance. But it seems quite intricate between Hernia and Normal. Having ongly 6 predictors does not seem enough for PCA. But we can try to do something with only the 3 first components.
+
+```{r}
+x_train<-pca$x[,1:3]
+y<-factor(train_set$class)
+fit<-knn3(x_train,y)
+z<-test_set[,-7]%>%as.matrix()
+x_test<-sweep(z,2,colMeans(z,na.rm=TRUE))%*%pca$rotation
+x_test<-x_test[,1:3]
+y_hat<-predict(fit,x_test,type="class")
+confusionMatrix(y_hat,factor(test_set$class))$overall["Accuracy"]
+accuracy_results<-bind_rows(accuracy_results,tibble(Method="PCA",Accuracy=confusionMatrix(y_hat,factor(test_set$class))$overall["Accuracy"]))
+```
+
+Using the 3 principal component does not give us more accuracy in our model. To be honest, I am not completely sure if I am using PCA with the right purpose.
+
+
+I acknowledge that my final model, KNN with cross-validation, obtaining merely 87% good results, could be improved. Perhaps it would have been better to use it on the other dataset provided by Kaggle, without distinction between the diseases (Spondylolisthesis and Hernia being both "disease", whereas normal stays "normal").
+
+## The other dataset provided 
+I try to do so in the following section :
+
+```{r charging data_2, tidy=TRUE}
+address<-"https://raw.githubusercontent.com/nmdumont/orthopedic-patients/master/column_2C_weka.csv"
+data_2<-read.csv(url(address))
+```
+
+```{r visualize data_2, out.width=500, echo=FALSE}
+data_2%>%
+  gather(angle, degree, -class) %>%
+  ggplot(aes(class,degree, col=class))+
+  geom_boxplot() +
+  facet_wrap(~angle)+
+  theme(axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank())
+```
+
+```{r a plot data_2, out.width=300, echo=FALSE}
+data_2%>% 
+  ggplot(aes(sacral_slope,pelvic_tilt.numeric, col=class))+
+  geom_point()
+
+```
+  
+All seem quite intricate for those two variables, even more than before. We can visualise other couples of variables :
+
+```{r different plots data_2, echo=FALSE, out.width=200}
+data_2%>% 
+   ggplot(aes(sacral_slope,lumbar_lordosis_angle, col=class))+
+   geom_point()
+data_2%>% 
+   ggplot(aes(pelvic_radius,lumbar_lordosis_angle, col=class))+
+   geom_point()
+```
+
+The areas for Hernia and Normal are overlapping. 
+
+```{r partitioning whole dataset data_2, echo=FALSE}
+set.seed(3)
+test_index <- createDataPartition(data_2$class, times = 1, p = 0.2, list = FALSE)    # create a 20% test set
+test_set_2 <- data_2[test_index,]
+train_set_2 <- data_2[-test_index,]
+```
+
+## Modeling
+
+I use the same models on this data set :
+
+### Regression tree
+
+```{r regression tree_2, echo=FALSE}
+fit_rpart_2<-rpart(class~.,data=train_set_2)
+plot(fit_rpart_2, margin=0.1)
+text(fit_rpart_2,cex=0.65)
+train_rpart_2 <- train(class ~ ., 
+                     method = "rpart",
+                     tuneGrid = data.frame(cp = seq(0, 0.05, 0.002)),
+                     data = train_set_2)
+rpart_preds_2 <- predict(train_rpart_2, test_set_2)
+guess_acc_2<-confusionMatrix(rpart_preds_2, test_set_2$class)$overall["Accuracy"]
+accuracy_results_2<- tibble(Method="Regression tree", Accuracy=guess_acc_2)
+knitr::kable(accuracy_results_2)
+```
+
+The tree looks a bit different, but we have the same accuracy.
+
+### Random forest
+We try to compute a random forest algorithm over our training set.
+```{r random forest_2, warning=FALSE}
+train_rf_2 <- train(class ~ .,
+                  data = train_set_2,
+                  method = "rf",
+                  ntree = 100,
+                  tuneGrid = data.frame(mtry = seq(1:7)))
+varImp(train_rf_2$finalModel) 
+```
+Sacral slope and Lumbar Lordosis angle are no loger the two most important variables (after Spondylolisthesis degree).
+Checking the results :
+```{r update results 2_2, echo=FALSE}
+rf_preds_2 <- predict(train_rf_2, test_set_2)
+accuracy_results_2<-bind_rows(accuracy_results_2,tibble(Method="Random forest",Accuracy=confusionMatrix(rf_preds_2,test_set_2$class)$overall["Accuracy"]))
+knitr::kable(accuracy_results_2)
+```
+
+### K-Nearest-Neighbours
+We can try to train a KNN regression. 
+```{r KNN enhanced_2, echo=FALSE}
+train_knn_2<-train(class~.,
+                 data=train_set_2,
+                 method="knn",
+                 tuneGrid=data.frame(k=seq(3,21,2)))
+knn_results_2<-confusionMatrix(predict(train_knn_2,test_set_2,type="raw"),test_set_2$class)$overall["Accuracy"]
+accuracy_results_2<-bind_rows(accuracy_results_2,tibble(Method="KNN",Accuracy=knn_results_2))
+train_knn_cv_2 <- train(class ~ .,
+                      method = "knn",
+                      data = train_set_2,
+                      tuneGrid = data.frame(k = seq(3, 51, 2)),
+                      trControl = trainControl(method = "cv", number = 10, p = 0.9))
+knn_cv_preds_2 <- predict(train_knn_cv_2, test_set_2)
+cv_results_2<-confusionMatrix(predict(train_knn_cv_2,test_set_2,type="raw"),test_set_2$class)$overall["Accuracy"]
+accuracy_results_2<-bind_rows(accuracy_results_2,tibble(Method="KNN Cross-validation",Accuracy=cv_results_2))
+knitr::kable(accuracy_results_2)
+```
+
+```{r principal component analysis_2, echo=FALSE}
+x_2<-train_set_2[,-7]%>%as.matrix()
+pca_2<-prcomp(x_2)
+
+x_train_2<-pca_2$x[,1:3]
+y_2<-factor(train_set_2$class)
+fit_2<-knn3(x_train_2,y_2)
+z_2<-test_set_2[,-7]%>%as.matrix()
+x_test_2<-sweep(z_2,2,colMeans(z_2,na.rm=TRUE))%*%pca_2$rotation
+x_test_2<-x_test_2[,1:3]
+y_hat_2<-predict(fit_2,x_test_2,type="class")
+pca_2_acc<-confusionMatrix(y_hat_2,factor(test_set_2$class))$overall["Accuracy"]
+accuracy_results_2<-bind_rows(accuracy_results_2,tibble(Method="PCA ",Accuracy=pca_2_acc))
+knitr::kable(accuracy_results_2)
+```
+
+So we have the results from the first data set
+
+```{r, echo=FALSE}
+knitr::kable(accuracy_results)
+```
+
+and the second data set 
+```{r, echo=FALSE}
+knitr::kable(accuracy_results_2)
+```
+
+The KNN algorithm on the second dataset seems already optimized, since cross-validation does not give something better. I am not sure why the second dataset is best, since I used the same algorithms. Except from the way the class of the disease is categorised, there is no other difference.
+
+I have also observed that the results are highly influenced by the number I use in the **set.seed** function. I do not have any input on this subject.
+
+
+# Conclusion 
+I tried to use the various models taught in the Data Science course. I did not include some clustering techniques, as I was not able to achieve them. Nevertheless, I can predict with almost 90% accuracy the presence of Hernia or Spondylolisthesis, based on a few parameters.  
+
+
+Maybe this model could be used to help prevent patients from suffering from Hernia or Spondylolisthesis, if only I could have drown a map based on the 6 parameters. I have no idea how that could be done, since I should develop a model showing tendencies.
+I wish I were able to compute an algorithm containing several parts, the first one being using tree classification to detect Sponylolisthesis and then using KNN to predict Hernia. Sadly, I was not able to do that.  
+
+
+I am glad to have done this analysis, even if it took me some time, having to view some contents again, searching for examples in the coursebook, on Stackoverflow, and on various resources such as [knitr's website](https://yihui.org/knitr/options/#plots).
