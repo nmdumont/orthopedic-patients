@@ -70,8 +70,6 @@ train_rpart$bestTune
 rpart_preds <- predict(train_rpart, test_set)
 mean(rpart_preds == test_set$class)
 confusionMatrix(rpart_preds, test_set$class)
-data_spondy<- factor(ifelse(train_set$degree_spondylolisthesis < 16.08,"Spondylolisthesis","Normal"))
-mean(data_spondy==train_set$class)
 
 #Random forest
 train_rf <- train(class ~ .,
@@ -133,7 +131,7 @@ confusionMatrix(y_hat,factor(test_set$class))$overall["Accuracy"]
 h<-hclust(d)
 plot(h,cex=0.65)
 
-cor(train_sansspo)
+cor(x_test)
 data.frame(pca$x[,1:2], Disease=train_set$class) %>%
   ggplot(aes(PC1,PC2,fill=Disease))+
   geom_point(cex=3,pch=21)
@@ -207,4 +205,4 @@ x_test_2<-sweep(z_2,2,colMeans(z_2,na.rm=TRUE))%*%pca_2$rotation
 x_test_2<-x_test_2[,1:3]
 y_hat_2<-predict(fit_2,x_test_2,type="class")
 pca_2_acc<-confusionMatrix(y_hat_2,test_set_2$class)$overall["Accuracy"]
-accuracy_results_2<-bind_rows(accuracy_results_2,tibble(Method="PCA ",Accuracy=pca_2_acc))
+pca_2_acc
